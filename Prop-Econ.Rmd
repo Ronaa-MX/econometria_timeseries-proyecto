@@ -1,0 +1,43 @@
+---
+title: "Pronóstico serie de tiempo de red espacial"
+output: html_notebook
+---
+
+Se trabaja con un tipo de dato de una red espacial, para el dataset  
+espacio-temporal de las entregas semanales de la aplicación *PedalMe* en Londres, 
+conteniendo una matriz de adyaciencia ponderada y una serie de tiempo de las 
+demandas semanales del 2020 al 2021. Se busca pronosticar la demanda semanal del
+conjunto por cada nodo, donde se tiene en total 15 y de la demanda total de 
+todos los nodos semanalmente.
+
+
+```{r}
+#Instalación de paquetes a utilizar
+install.packages(c("tidyverse","lubricate","igraph"))
+library(tidyverse)
+library(lubridate)
+library(igraph)
+```
+
+
+```{r}
+#Carga del dataset del grafo
+
+edges<- read.csv("pedalme_edges.csv")
+edges <- edges[edges$from != edges$to, ]
+# Crear el grafo usando igraph
+grafo <- graph_from_data_frame(d = edges, directed = FALSE)
+# Graficar el grafo
+plot(grafo,
+     edge.label = E(grafo)$label,
+     edge.label.cex = 0.7,
+     edge.label.color = "darkred",
+     edge.label.background = "white",
+     edge.width = E(grafo)$weight * 3,
+     vertex.label = V(grafo)$name,
+     vertex.size = 25,  # Aumentar tamaño de los nodos
+     vertex.color = "lightblue",
+     layout = layout_in_circle(grafo),  # Layout circular para mejor distribución
+     main = "Grafo con pesos")
+```
+
