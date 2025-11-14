@@ -2,42 +2,164 @@
 title: "Pronóstico serie de tiempo de red espacial"
 output: html_notebook
 ---
+#Motivos 
 
 Se trabaja con un tipo de dato de una red espacial, para el dataset  
 espacio-temporal de las entregas semanales de la aplicación *PedalMe* en Londres, 
 conteniendo una matriz de adyaciencia ponderada y una serie de tiempo de las 
 demandas semanales del 2020 al 2021. Se busca pronosticar la demanda semanal del
-conjunto por cada nodo, donde se tiene en total 15 y de la demanda total de 
-todos los nodos semanalmente.
+conjunto por cada nodo, donde se tiene en total 15 y de la demanda promedio 
+total de todos los nodos semanalmente.
 
-
+##Paquetes
 ```{r}
 #Instalación de paquetes a utilizar
-install.packages(c("tidyverse","lubricate","igraph"))
-library(tidyverse)
+install.packages(c("lubridate","igraph","fable","feasts","tsibbledata","corrplot"));
+#Paquetes a usar
+library(fable)
+library(tsibble)
+library(tseries)
+library(dplyr)
 library(lubridate)
 library(igraph)
+library(fable)
+library(feasts)
+library(tsibbledata)
+library(corrplot)
+library(tidyr)
 ```
 
+##Gráfica del grafo con pesos
+```{r}
+# Leer el dataset de edges
+edges <- read.csv("pedalme_edges.csv")
+
+# Crear matriz de adyacencia de 15x15
+nodos <- 15
+matriz_adyacencia <- matrix(0, nrow = nodos, ncol = nodos)
+
+# Llenar la matriz
+for (i in 1:nrow(edges)) {
+  from <- edges$from[i] + 1
+  to <- edges$to[i] + 1
+  peso <- edges$weight[i]
+  matriz_adyacencia[from, to] <- peso
+}
+
+# Hacer la matriz simétrica? (dado que el grafo es no dirigido, y el dataset ya tiene ambas direcciones, pero por si acaso)
+# En nuestro caso, el dataset ya es simétrico, pero si no, podemos hacer:
+# matriz_adyacencia <- (matriz_adyacencia + t(matriz_adyacencia)) / 2
+
+# Poner la diagonal a 0
+diag(matriz_adyacencia) <- 0
+
+# Crear grafo
+g <- graph_from_adjacency_matrix(matriz_adyacencia, mode = "undirected", weighted = TRUE)
+
+# Layout en círculo
+layout_circle <- layout_in_circle(g)
+
+plot(g, 
+     layout = layout_circle,
+     vertex.size = 10,
+     vertex.color = "lightblue",
+     vertex.label.cex = 0.8,
+     vertex.label.color = "darkblue",
+     edge.width = E(g)$weight * 5,
+     edge.color = "gray",
+     main = "Grafo de red de bicicletas")
+```
+##Matriz de Adyaciencia del grafo con pesos
+```{r}
+#Matriz de Adyaciencia
+write.csv(matriz_adyacencia, "matriz_adyacencia.csv", row.names = FALSE)
+```
 
 ```{r}
-#Carga del dataset del grafo
+# Cargar datos
+features <- read.csv("pedalme_features.csv")
 
-edges<- read.csv("pedalme_edges.csv")
-edges <- edges[edges$from != edges$to, ]
-# Crear el grafo usando igraph
-grafo <- graph_from_data_frame(d = edges, directed = FALSE)
-# Graficar el grafo
-plot(grafo,
-     edge.label = E(grafo)$label,
-     edge.label.cex = 0.7,
-     edge.label.color = "darkred",
-     edge.label.background = "white",
-     edge.width = E(grafo)$weight * 3,
-     vertex.label = V(grafo)$name,
-     vertex.size = 25,  # Aumentar tamaño de los nodos
-     vertex.color = "lightblue",
-     layout = layout_in_circle(grafo),  # Layout circular para mejor distribución
-     main = "Grafo con pesos")
+#Transformación de dataset
+spatial_panel <- features %>%
+  select(-1) %>%  # Eliminar columna índice
+  mutate(
+    date = as.Date("2020-01-06") + weeks(week - 1 + ifelse(year == 2021, 52, 0)),
+    time_period = paste0(year, "-W", sprintf("%02d", week))
+  ) %>%
+  select(time, date, time_period, year, week, node, demand) %>%
+  arrange(time, node)
+
+network_ts <- spatial_panel %>%
+  group_by(time, date, year, week) %>%
+  summarise(
+    total_demand = sum(demand),
+    avg_demand = mean(demand),
+    demand_variance = var(demand),
+    active_nodes = sum(demand > 0),
+    .groups = 'drop'
+  ) %>% 
+  mutate(total_demand_ts = ts(total_demand, start = c(2020, 22), frequency = 52))
 ```
+##Tranformación de los paneles de datos 
+```{r}
+# Transformar network_ts a tsibble (estructura nativa del libro)
+network_ts_tsibble <- network_ts %>%
+  as_tsibble(index = date)  # Especificar la columna de tiempo como índice
+# Convertir spatial_panel a tsibble con clave nodal
+spatial_panel_tsibble <-spatial_panel %>%
+  as_tsibble(key = node, index = date)  # key=node para estructura panel
+# Features por cada nodo individual
+nodal_features <- spatial_panel_tsibble %>%
+  features(demand, list(
+    mean = mean,
+    sd = sd,
+    cv = ~sd(.)/mean(.),
+    autocorr = ~ACF(., lag_max = 1)$acf[2],
+    trend_strength = ~feasts::feat_stl(.)$trend_strength,
+    seasonal_strength = ~feasts::feat_stl(.)$seasonal_strength_year
+  ))
+
+# Verificar la estructura
+glimpse(network_ts_tsibble)
+```
+
+##Análisis de serie de Tiempo  de demanda completa
+```{r}
+network_ts_tsibble %>% 
+  features(total_demand, list(
+    mean = mean,
+    sd = sd, 
+    min = min,
+    max = max,
+    median = median,
+    q25 = ~quantile(., 0.25),
+    q75 = ~quantile(., 0.75)
+  ))
+
+# Serie temporal principal (nativo tsibble)
+autoplot(network_ts_tsibble, total_demand)
+
+# Gráfico de estacionalidad
+gg_season(network_ts_tsibble, total_demand, period = "year")
+
+# Subseries por semana del año
+gg_subseries(network_ts_tsibble, total_demand, period = 52)
+```
+##Método de Box-Jenkins
+```{r}
+# ACF y PACF nativos
+acf_plot <- network_ts_tsibble %>%
+  ACF(total_demand, lag_max = 104) %>%
+  autoplot()
+
+pacf_plot <- network_ts_tsibble %>%
+  PACF(total_demand, lag_max = 52) %>%
+  autoplot()
+
+acf_plot 
+pacf_plot
+```
+##Análisis de series de tiempo por demanda de nodo
+
+
 
