@@ -1,165 +1,180 @@
 ---
 title: "Pronóstico serie de tiempo de red espacial"
+author: "Aarón Ortiz Mendoza"
 output: html_notebook
+editor_options: 
+  markdown: 
+    wrap: 72
 ---
-#Motivos 
 
-Se trabaja con un tipo de dato de una red espacial, para el dataset  
-espacio-temporal de las entregas semanales de la aplicación *PedalMe* en Londres, 
-conteniendo una matriz de adyaciencia ponderada y una serie de tiempo de las 
-demandas semanales del 2020 al 2021. Se busca pronosticar la demanda semanal del
-conjunto por cada nodo, donde se tiene en total 15 y de la demanda promedio 
-total de todos los nodos semanalmente.
+# Motivos
 
-##Paquetes
+Buscando aplicar las técnicas de pronóstico **Box-Jenkins** para series
+de tiempo espacio-temporales para conocer sus condiciones respecto al
+tipo de serie **ARIMA**. Se hara un prónostico a una serie de tiempo
+espacio-temporal dondé se busca realizar a los nodos con más ponderados
+por sus vértices del grafo y de la demanda total semanal del grafo.
+
+# Problématica
+
+Se trabaja con un tipo de dato de una red espacial, para el dataset\
+espacio-temporal de las entregas semanales de la aplicación **PedalMe**
+en Londres, conteniendo una lista de vértices ponderada y una serie de
+tiempo de las demandas semanales del 2020 al 2021 por nodo. Se busca
+pronosticar la demanda semanal del por cada nodo relevante, donde se
+tiene en total 15 y de la demanda promedio total de todos los nodos
+semanalmente.
+
+## Paquetes
+
 ```{r}
 #Instalación de paquetes a utilizar
-install.packages(c("lubridate","igraph","fable","feasts","tsibbledata","corrplot"));
+install.packages(c("dplyr", "tidyr", "lubridate","igraph", "starma"
+))
+
 #Paquetes a usar
-library(fable)
-library(tsibble)
-library(tseries)
 library(dplyr)
+library(tidyr)
 library(lubridate)
 library(igraph)
-library(fable)
-library(feasts)
-library(tsibbledata)
-library(corrplot)
-library(tidyr)
+library(starma)
+
 ```
 
-##Gráfica del grafo con pesos
+## Análisis del grafo
+
+Trabajamos con un grafo de 15 nodos y 15 vérticos, no dirigidos con
+ponderación entre cada uno, unos más grandes que otros donde veremos los
+5 primeros nodos con mayor valor ponderado entre cada uno. Crearamos: 
+
+- Matriz de adyaciencia ente los nodos con su ponderación 
+- Gráfica de
+conexión entre los nodos con sus vértices en base a su ponderación
+
 ```{r}
-# Leer el dataset de edges
 edges <- read.csv("pedalme_edges.csv")
 
-# Crear matriz de adyacencia de 15x15
-nodos <- 15
-matriz_adyacencia <- matrix(0, nrow = nodos, ncol = nodos)
+g <- graph_from_data_frame(edges, directed = FALSE)
+E(g)$weight <- edges$weight
 
-# Llenar la matriz
-for (i in 1:nrow(edges)) {
-  from <- edges$from[i] + 1
-  to <- edges$to[i] + 1
-  peso <- edges$weight[i]
-  matriz_adyacencia[from, to] <- peso
-}
-
-# Hacer la matriz simétrica? (dado que el grafo es no dirigido, y el dataset ya tiene ambas direcciones, pero por si acaso)
-# En nuestro caso, el dataset ya es simétrico, pero si no, podemos hacer:
-# matriz_adyacencia <- (matriz_adyacencia + t(matriz_adyacencia)) / 2
-
-# Poner la diagonal a 0
+matriz_adyacencia <- as.matrix(
+  as_adjacency_matrix(g, attr = "weight", sparse = FALSE)
+)
 diag(matriz_adyacencia) <- 0
+```
+
+```{r}
+summary(E(g)$weight)
+hist(E(g)$weight, main = "Distribución de pesos", xlab = "Peso")
+```
+
+```{r}
+heatmap(matriz_adyacencia,
+        Rowv = NA, Colv = NA,
+        scale = "none",
+        main = "Mapa de calor del grafo ponderado")
+
+```
+
+```{r}
+# Dimensiones y estructura
+dim(edges)
+str(edges)
+
+# Primeras filas
+knitr::kable(head(edges, 10),
+             caption = "Lista de vértices ponderados del grafo")
+```
+
+```{r}
+summary(edges$weight)
+```
+
+## Gráfica del grafo con pesos
+
+```{r}
+# Leer el dataset de edges
 
 # Crear grafo
 g <- graph_from_adjacency_matrix(matriz_adyacencia, mode = "undirected", weighted = TRUE)
 
-# Layout en círculo
-layout_circle <- layout_in_circle(g)
+layout_fr <- layout_with_fr(g, weights = E(g)$weight)
 
-plot(g, 
-     layout = layout_circle,
+plot(g,
+     layout = layout_fr,
      vertex.size = 10,
      vertex.color = "lightblue",
+     vertex.label.dist = 1.5,
      vertex.label.cex = 0.8,
      vertex.label.color = "darkblue",
-     edge.width = E(g)$weight * 5,
-     edge.color = "gray",
-     main = "Grafo de red de bicicletas")
+     edge.width = sqrt(E(g)$weight) * 3,
+     edge.color = rgb(0,0,0,0.3),
+     main = "Grafo ponderado de bicicletas")
 ```
-##Matriz de Adyaciencia del grafo con pesos
+
+## Matriz de Adyaciencia del grafo con pesos
+
 ```{r}
 #Matriz de Adyaciencia
 write.csv(matriz_adyacencia, "matriz_adyacencia.csv", row.names = FALSE)
 ```
 
 ```{r}
-# Cargar datos
-features <- read.csv("pedalme_features.csv")
-
-#Transformación de dataset
-spatial_panel <- features %>%
-  select(-1) %>%  # Eliminar columna índice
+panel <- read.csv("pedalme_features.csv") %>%
   mutate(
-    date = as.Date("2020-01-06") + weeks(week - 1 + ifelse(year == 2021, 52, 0)),
-    time_period = paste0(year, "-W", sprintf("%02d", week))
+    date = as.Date(ISOdate(year, 1, 4)) + weeks(week - 1)
   ) %>%
-  select(time, date, time_period, year, week, node, demand) %>%
-  arrange(time, node)
-
-network_ts <- spatial_panel %>%
-  group_by(time, date, year, week) %>%
-  summarise(
-    total_demand = sum(demand),
-    avg_demand = mean(demand),
-    demand_variance = var(demand),
-    active_nodes = sum(demand > 0),
-    .groups = 'drop'
-  ) %>% 
-  mutate(total_demand_ts = ts(total_demand, start = c(2020, 22), frequency = 52))
+  select(date, year, week, node, demand) %>%
+  arrange(date, node)
 ```
-##Tranformación de los paneles de datos 
+
 ```{r}
-# Transformar network_ts a tsibble (estructura nativa del libro)
-network_ts_tsibble <- network_ts %>%
-  as_tsibble(index = date)  # Especificar la columna de tiempo como índice
-# Convertir spatial_panel a tsibble con clave nodal
-spatial_panel_tsibble <-spatial_panel %>%
-  as_tsibble(key = node, index = date)  # key=node para estructura panel
-# Features por cada nodo individual
-nodal_features <- spatial_panel_tsibble %>%
-  features(demand, list(
-    mean = mean,
-    sd = sd,
-    cv = ~sd(.)/mean(.),
-    autocorr = ~ACF(., lag_max = 1)$acf[2],
-    trend_strength = ~feasts::feat_stl(.)$trend_strength,
-    seasonal_strength = ~feasts::feat_stl(.)$seasonal_strength_year
-  ))
-
-# Verificar la estructura
-glimpse(network_ts_tsibble)
+network_weekly <- panel %>%
+  group_by(date) %>%
+  summarise(total_demand = sum(demand), .groups = "drop") %>%
+  arrange(date)
 ```
 
-##Análisis de serie de Tiempo  de demanda completa
+## Análisis de serie de Tiempo de demanda completa
+
 ```{r}
-network_ts_tsibble %>% 
-  features(total_demand, list(
-    mean = mean,
-    sd = sd, 
-    min = min,
-    max = max,
-    median = median,
-    q25 = ~quantile(., 0.25),
-    q75 = ~quantile(., 0.75)
-  ))
-
-# Serie temporal principal (nativo tsibble)
-autoplot(network_ts_tsibble, total_demand)
-
-# Gráfico de estacionalidad
-gg_season(network_ts_tsibble, total_demand, period = "year")
-
-# Subseries por semana del año
-gg_subseries(network_ts_tsibble, total_demand, period = 52)
+library(tsibble)
+library(feasts)
+network_ts <- network_weekly %>%
+  mutate(week_index = yearweek(date)) %>%
+  as_tsibble(index = week_index) %>%
+  fill_gaps(total_demand = 0)
 ```
-##Método de Box-Jenkins
+
+## Método de Box-Jenkins
+
 ```{r}
-# ACF y PACF nativos
-acf_plot <- network_ts_tsibble %>%
-  ACF(total_demand, lag_max = 104) %>%
-  autoplot()
+library(ggplot2)
 
-pacf_plot <- network_ts_tsibble %>%
-  PACF(total_demand, lag_max = 52) %>%
-  autoplot()
-
-acf_plot 
-pacf_plot
+autoplot(network_ts, total_demand)
 ```
-##Análisis de series de tiempo por demanda de nodo
+```{r}
+acf(network_ts$total_demand, lag.max = 52)
+pacf(network_ts$total_demand, lag.max = 52)
+```
 
+## Análisis de series de tiempo por demanda de nodo
 
+```{r}
+node_summary <- panel %>%
+  group_by(node) %>%
+  summarise(total_demand = sum(demand))
+
+top5_nodes <- node_summary %>%
+  arrange(desc(total_demand)) %>%
+  slice(1:5) %>%
+  pull(node)
+
+weekly_top5 <- panel %>%
+  filter(node %in% top5_nodes) %>%
+  group_by(date, year, week, node) %>%
+  summarise(demand = sum(demand), .groups = "drop") %>%
+  pivot_wider(names_from = node, values_from = demand) %>%
+  arrange(date)
+```
 
