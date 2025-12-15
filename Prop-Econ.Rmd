@@ -1,7 +1,10 @@
 ---
-title: "Pronóstico serie de tiempo de red espacial"
+title: "Pronóstico para serie de tiempo de demanda total de una red espacial"
 author: "Aarón Ortiz Mendoza"
-output: html_notebook
+output: 
+  html_notebook: 
+    toc: true
+    toc_float: true
 editor_options: 
   markdown: 
     wrap: 72
@@ -9,39 +12,260 @@ editor_options:
 
 # Motivos
 
-Buscando aplicar las técnicas de pronóstico **Box-Jenkins** para series
-de tiempo espacio-temporales para conocer sus condiciones respecto al
-tipo de serie **ARIMA**. Se hara un prónostico a una serie de tiempo
-espacio-temporal dondé se busca realizar a los nodos con más ponderados
-por sus vértices del grafo y de la demanda total semanal del grafo.
+Buscando aplicar las técnicas de pronóstico **Box-Jenkins** a una serie
+de tiempo de una red espacio-temporales para conocer sus condiciones respecto al
+tipo de serie **ARIMA**. Se hara un prónostico a una serie de tiempo de la 
+demanda total semanal del grafo.
 
 # Problématica
 
-Se trabaja con un tipo de dato de una red espacial, para el dataset\
+Se trabaja con un tipo de dato de una red espacial, para el dataset
 espacio-temporal de las entregas semanales de la aplicación **PedalMe**
 en Londres, conteniendo una lista de vértices ponderada y una serie de
 tiempo de las demandas semanales del 2020 al 2021 por nodo. Se busca
-pronosticar la demanda semanal del por cada nodo relevante, donde se
-tiene en total 15 y de la demanda promedio total de todos los nodos
-semanalmente.
+pronosticar la demanda total semanal de todos los nodos.
 
-## Paquetes
+# Paquetes
 
+LIbrearías a instalar y utilizadas para realizar el pronóstico.
 ```{r}
-#Instalación de paquetes a utilizar
-install.packages(c("dplyr", "tidyr", "lubridate","igraph", "starma"
-))
+packages <- c(
+  "dplyr", "tidyr", "lubridate", "igraph", "starma",
+  "feasts", "ggplot2", "tsibble", "tseries", "forecast"
+)
 
-#Paquetes a usar
-library(dplyr)
-library(tidyr)
-library(lubridate)
-library(igraph)
-library(starma)
+# Ver qué paquetes NO están instalados
+missing_packages <- setdiff(packages, rownames(installed.packages()))
 
+# Instalar solo los faltantes
+if (length(missing_packages) > 0) {
+  install.packages(missing_packages)
+}
+
+# Cargar todos los paquetes
+invisible(lapply(packages, library, character.only = TRUE))
 ```
 
-## Análisis del grafo
+# Análisis de la serie de tiempo de la demanda total semanal
+
+Se genera un un panel de datos la serie de tiempo, tomando en cuenta la fecha de
+los valores que esta dados por un año y semana del mismo.
+
+```{r}
+panel <- read.csv("pedalme_features.csv") %>%
+  mutate(
+    date = as.Date(ISOdate(year, 1, 4)) + weeks(week - 1)
+  ) %>%
+  select(date, year, week, node, demand) %>%
+  arrange(date, node)
+```
+
+## Serie de tiempo de demanda total semanal
+
+Del panel de datos se toma el total de cada semana de las demandas para tener 
+el total semanal.
+```{r}
+network_weekly <- panel %>%
+  group_by(date) %>%
+  summarise(total_demand = sum(demand), .groups = "drop") %>%
+  arrange(date)
+
+knitr::kable(head(network_weekly, 10),
+             caption = "Demanda total por semana")
+```
+
+Ahora los transformamos a un objeto de serie de tiempo para poder trabajar con 
+el mismo. 
+```{r}
+network_ts <- network_weekly %>%
+  as_tsibble(index = date)
+network_ts <- network_ts %>%
+  mutate(week = isoweek(date))
+knitr::kable(head(network_ts,20),
+             caption = "Demanda total por semana serie de tiempo")
+```
+## Análisis de serie de Tiempo de demanda total
+
+**Grafricamos** nuesta serie de tiempo para conocer la misma y sus tendencias.
+```{r}
+autoplot(network_ts, total_demand) +
+  labs(
+    title = "Demanda total semanal observada del grafo",
+    y = "Demanda"
+  )
+```
+
+Se acaba realizando una diagnóstico de la serie para conocer los los parámetros 
+a considerar del modelo *ARIMA* Box-Jenkins, donde queremos revisar los 
+parámetros:
+* Autoregresión *P*
+* Integración *I*
+* Media Movíl *Q*
+
+Además de realizar una prueba **aumentada de Dickey-Fuller** para conocer si la 
+serie es estacionaria o se necesitara realizar una diferencia para volverla una.
+Además de las gráficas de las funciones de autoregresión y autroregresión 
+parcial para saber que paramétros ir considerando para el modelo **ARIMA**.
+```{r}
+ts_network <- ts(
+  network_weekly$total_demand,
+  frequency = 52
+)
+
+acf_plot<-acf(ts_network, lag.max = 15)
+pacf_plot<-pacf(ts_network, lag.max = 15)
+
+adf.test(ts_network)
+```
+Vemos que la serie debe diferenciarse así que los en base a tener las 
+diferencias entre el valor actual y los anteriores.
+```{r}
+# Diferenciación
+d_total <- diff(ts_network)
+```
+Realizamos de nuevo la prueba **aumentada de Dickey-Fuller** para revisar la 
+estacionalidad como revisar de nuevo las funciones de autoregresión y 
+autoregresión parcial para conocer los paramétros del modelo **ARIMA** siguiendo
+la metología **Box-Jenkins**.
+```{r}
+adf.test(d_total)
+acf_dtotal<-acf(d_total, lag.max = 12)
+pacdf_dtotal<-pacf(d_total, lag.max = 12)
+
+```
+Divideremos en la serie en un 80% para los datos de entrenamiento y el 20% para 
+la prueba para podre ir seleccionando el modelo a escoger en base a lo visto, de
+la preuba **aumentada de Dickey-Fuller**, función de autoregresión y 
+autoregresión parcial para ir tomando en cuenta que modelo aplicar en base a los 
+parámetros.
+```{r}
+n <- length(ts_network)
+n_train <- floor(0.8 * n)
+
+train_total <- window(ts_network, end = c(1, n_train))
+test_total  <- window(ts_network, start = c(1, n_train + 1))
+
+```
+Probamos tres modelos distintos con los parámetros de:
+* I(1) y MA(1)
+* AR(1) y I(1) 
+* AR(1), I(1) y MA(1)
+```{r}
+# Demanda total
+m1_total <- Arima(train_total, order = c(0,1,1))
+m2_total <- Arima(train_total, order = c(1,1,0))
+m3_total <- Arima(train_total, order = c(1,1,1))
+```
+Realizamos un prónostico con cada de un tiempo de cuatro semanas más.
+```{r}
+h <- length(test_total)
+
+fc_total_011 <- forecast(m1_total, h = h)
+fc_total_110 <- forecast(m2_total, h = h)
+fc_total_111 <- forecast(m3_total, h = h)
+```
+Revisaremos los residuos en base a la preuba Ljung-Box para considerar si alguno
+de los tres propuestos es mejor a los demás en base a su autoregresión.
+```{r}
+checkresiduals(m1_total)
+checkresiduals(m2_total)
+checkresiduals(m3_total)
+```
+Tomando en cuenta que contamos con sólo 36 entradas de datos, siendo muy pocas. 
+consideramos un criterio de información más sencillo siendo este el "Aikiko 
+Information Criterion" para poder seleccionar en base los errores estándar de 
+alguna de nuestras propuestas, selecionando para poder escoger con la evaluación
+más baja.
+```{r}
+AIC(m1_total, m2_total, m3_total)
+```
+Tomaremos las medidas en base a los datos de prueba la factibilidad de 
+considerar en base a diferentes criterios de errores.
+```{r}
+accuracy(fc_total_011, test_total)
+accuracy(fc_total_110, test_total)
+accuracy(fc_total_111, test_total)
+```
+Acabamos escogiendo el modelo **ARIMA** con los parámetros I(1) y MA(1), donde 
+dado que por el intervalo de confianza sabemos que el pronóstico producido sera 
+uno también con valores menores a cero, tranformamos nuestra serie 
+momentraneamente a una con valores logaritmicos para evitar esa cuestión y tener
+pronósticos con solo valores no negativos.
+```{r}
+ts_total_log <- log1p(ts_network)
+# Modelo ya ajustado
+model_log <- Arima(ts_total_log, order = c(0,1,1))
+
+# Pronóstico
+fc_log <- forecast(model_log, h = 10, level = c(80, 95))
+
+# Media
+mean_fc <- expm1(fc_log$mean)
+
+# Intervalos
+lower80 <- expm1(fc_log$lower[, "80%"])
+upper80 <- expm1(fc_log$upper[, "80%"])
+
+lower95 <- expm1(fc_log$lower[, "95%"])
+upper95 <- expm1(fc_log$upper[, "95%"])
+```
+Tranformando igualemente los datos para poder tener una orden crónologico como 
+la serie de tiempo original para poder tener una coherencia en nuestra serie de 
+tiempo.
+```{r}
+future_dates <- seq(
+  from = max(network_weekly$date) + weeks(1),
+  by = "week",
+  length.out = length(mean_fc)
+)
+fc_df <- data.frame(
+  date = future_dates,
+  mean = as.numeric(mean_fc),
+  lower80 = as.numeric(lower80),
+  upper80 = as.numeric(upper80),
+  lower95 = as.numeric(lower95),
+  upper95 = as.numeric(upper95)
+)
+```
+
+## Gráfica del pronóstico final de la serie de tiempo de la red espacial
+Gráfica con los valores presentados de la serie de tiempo de la demanda total 
+semanal de nuesta red espacial.
+```{r}
+ggplot() +
+  geom_line(
+    data = network_weekly,
+    aes(x = date, y = total_demand),
+    color = "black"
+  ) +
+  geom_ribbon(
+    data = fc_df,
+    aes(x = date, ymin = lower95, ymax = upper95),
+    fill = "lightblue",
+    alpha = 0.4
+  ) +
+  geom_ribbon(
+    data = fc_df,
+    aes(x = date, ymin = lower80, ymax = upper80),
+    fill = "blue",
+    alpha = 0.4
+  ) +
+  geom_line(
+    data = fc_df,
+    aes(x = date, y = mean),
+    color = "blue",
+    linewidth = 1
+  ) +
+  labs(
+    title = "Pronóstico semanal de la demanda del grafo",
+    x = "Semana–Año",
+    y = "Demanda"
+  )
+```
+
+# Análisis de grafo ponderado
+
+## Grafo Completo Ponderado
 
 Trabajamos con un grafo de 15 nodos y 15 vérticos, no dirigidos con
 ponderación entre cada uno, unos más grandes que otros donde veremos los
@@ -62,20 +286,20 @@ matriz_adyacencia <- as.matrix(
 )
 diag(matriz_adyacencia) <- 0
 ```
-
+## Histograma de ponderaciones del grafo
 ```{r}
 summary(E(g)$weight)
 hist(E(g)$weight, main = "Distribución de pesos", xlab = "Peso")
 ```
-
+## Mapa de calor del grafo completo ponderado
 ```{r}
 heatmap(matriz_adyacencia,
         Rowv = NA, Colv = NA,
-        scale = "none",
+        scale="row",
         main = "Mapa de calor del grafo ponderado")
 
 ```
-
+## Dimensiones del grafo
 ```{r}
 # Dimensiones y estructura
 dim(edges)
@@ -86,15 +310,8 @@ knitr::kable(head(edges, 10),
              caption = "Lista de vértices ponderados del grafo")
 ```
 
-```{r}
-summary(edges$weight)
-```
-
 ## Gráfica del grafo con pesos
-
 ```{r}
-# Leer el dataset de edges
-
 # Crear grafo
 g <- graph_from_adjacency_matrix(matriz_adyacencia, mode = "undirected", weighted = TRUE)
 
@@ -111,70 +328,3 @@ plot(g,
      edge.color = rgb(0,0,0,0.3),
      main = "Grafo ponderado de bicicletas")
 ```
-
-## Matriz de Adyaciencia del grafo con pesos
-
-```{r}
-#Matriz de Adyaciencia
-write.csv(matriz_adyacencia, "matriz_adyacencia.csv", row.names = FALSE)
-```
-
-```{r}
-panel <- read.csv("pedalme_features.csv") %>%
-  mutate(
-    date = as.Date(ISOdate(year, 1, 4)) + weeks(week - 1)
-  ) %>%
-  select(date, year, week, node, demand) %>%
-  arrange(date, node)
-```
-
-```{r}
-network_weekly <- panel %>%
-  group_by(date) %>%
-  summarise(total_demand = sum(demand), .groups = "drop") %>%
-  arrange(date)
-```
-
-## Análisis de serie de Tiempo de demanda completa
-
-```{r}
-library(tsibble)
-library(feasts)
-network_ts <- network_weekly %>%
-  mutate(week_index = yearweek(date)) %>%
-  as_tsibble(index = week_index) %>%
-  fill_gaps(total_demand = 0)
-```
-
-## Método de Box-Jenkins
-
-```{r}
-library(ggplot2)
-
-autoplot(network_ts, total_demand)
-```
-```{r}
-acf(network_ts$total_demand, lag.max = 52)
-pacf(network_ts$total_demand, lag.max = 52)
-```
-
-## Análisis de series de tiempo por demanda de nodo
-
-```{r}
-node_summary <- panel %>%
-  group_by(node) %>%
-  summarise(total_demand = sum(demand))
-
-top5_nodes <- node_summary %>%
-  arrange(desc(total_demand)) %>%
-  slice(1:5) %>%
-  pull(node)
-
-weekly_top5 <- panel %>%
-  filter(node %in% top5_nodes) %>%
-  group_by(date, year, week, node) %>%
-  summarise(demand = sum(demand), .groups = "drop") %>%
-  pivot_wider(names_from = node, values_from = demand) %>%
-  arrange(date)
-```
-
