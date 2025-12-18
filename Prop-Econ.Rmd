@@ -5,6 +5,8 @@ output:
   html_notebook: 
     toc: true
     toc_float: true
+bibliography: biblio.bib
+nocite: '@*'
 editor_options: 
   markdown: 
     wrap: 72
@@ -13,7 +15,7 @@ editor_options:
 # Motivos
 
 Buscando aplicar las técnicas de pronóstico **Box-Jenkins** a una serie
-de tiempo de una red espacio-temporales para conocer sus condiciones respecto al
+de tiempo de una red espacio-temporal para conocer sus condiciones respecto al
 tipo de serie **ARIMA**. Se hara un prónostico a una serie de tiempo de la 
 demanda total semanal del grafo.
 
@@ -30,7 +32,7 @@ pronosticar la demanda total semanal de todos los nodos.
 LIbrearías a instalar y utilizadas para realizar el pronóstico.
 ```{r}
 packages <- c(
-  "dplyr", "tidyr", "lubridate", "igraph", "starma",
+  "dplyr", "tidyr", "lubridate", "igraph",
   "feasts", "ggplot2", "tsibble", "tseries", "forecast"
 )
 
@@ -74,6 +76,8 @@ knitr::kable(head(network_weekly, 10),
              caption = "Demanda total por semana")
 ```
 
+
+
 Ahora los transformamos a un objeto de serie de tiempo para poder trabajar con 
 el mismo. 
 ```{r}
@@ -91,13 +95,14 @@ knitr::kable(head(network_ts,20),
 autoplot(network_ts, total_demand) +
   labs(
     title = "Demanda total semanal observada del grafo",
+    x="Semana-Año",
     y = "Demanda"
   )
 ```
 
 Se acaba realizando una diagnóstico de la serie para conocer los los parámetros 
-a considerar del modelo *ARIMA* Box-Jenkins, donde queremos revisar los 
-parámetros:
+a considerar del modelo *ARIMA* del método Box-Jenkins, donde queremos revisar 
+los parámetros:
 * Autoregresión *P*
 * Integración *I*
 * Media Movíl *Q*
@@ -118,7 +123,7 @@ pacf_plot<-pacf(ts_network, lag.max = 15)
 adf.test(ts_network)
 ```
 Vemos que la serie debe diferenciarse así que los en base a tener las 
-diferencias entre el valor actual y los anteriores.
+diferencias entre el valor actual y sus lags.
 ```{r}
 # Diferenciación
 d_total <- diff(ts_network)
@@ -172,7 +177,7 @@ checkresiduals(m2_total)
 checkresiduals(m3_total)
 ```
 Tomando en cuenta que contamos con sólo 36 entradas de datos, siendo muy pocas. 
-consideramos un criterio de información más sencillo siendo este el "Aikiko 
+consideramos un criterio de información más sencillo siendo este el "Akaike 
 Information Criterion" para poder seleccionar en base los errores estándar de 
 alguna de nuestras propuestas, selecionando para poder escoger con la evaluación
 más baja.
@@ -258,12 +263,12 @@ ggplot() +
   ) +
   labs(
     title = "Pronóstico semanal de la demanda del grafo",
-    x = "Semana–Año",
+    x = "Semana-Año",
     y = "Demanda"
   )
 ```
 
-# Análisis de grafo ponderado
+# Extra-Análisis de grafo ponderado
 
 ## Grafo Completo Ponderado
 
@@ -287,11 +292,18 @@ matriz_adyacencia <- as.matrix(
 diag(matriz_adyacencia) <- 0
 ```
 ## Histograma de ponderaciones del grafo
+Se muestra la frecuencia de los valores ponderados de los vértices entre los 
+nodos, dado que en la red se conectan los nodos con todos los de la misma red, 
+se considera al grafo uno completo, los valores de uno son los de los nodos 
+conectados consigo mismos. Además de uns resumen de los valores de las 
+ponderaciones de los vértices de la red.
 ```{r}
 summary(E(g)$weight)
 hist(E(g)$weight, main = "Distribución de pesos", xlab = "Peso")
 ```
 ## Mapa de calor del grafo completo ponderado
+Como en el caso anterior se muestra en base a un color más oscruro a claro, 
+llendo de un valor entre 0 a 1 de los vértices ponderados entre los vértices.
 ```{r}
 heatmap(matriz_adyacencia,
         Rowv = NA, Colv = NA,
@@ -300,6 +312,8 @@ heatmap(matriz_adyacencia,
 
 ```
 ## Dimensiones del grafo
+Dimensiones de la matriz de adayaciencia además de los valores de las conexiones
+entre los nodos a través de la lista de vértices.
 ```{r}
 # Dimensiones y estructura
 dim(edges)
@@ -311,6 +325,9 @@ knitr::kable(head(edges, 10),
 ```
 
 ## Gráfica del grafo con pesos
+
+Gráfica de toda la red donde se presenta los nodos y vértices, donde los pesos
+se representan a través del grosor del vértice que conecta los nodos.
 ```{r}
 # Crear grafo
 g <- graph_from_adjacency_matrix(matriz_adyacencia, mode = "undirected", weighted = TRUE)
@@ -328,3 +345,5 @@ plot(g,
      edge.color = rgb(0,0,0,0.3),
      main = "Grafo ponderado de bicicletas")
 ```
+
+# Referencias 
